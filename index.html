@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>π / Dakika Sayacı</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; font-family:system-ui,sans-serif; background:#0f1115; color:#f3f4f6; }
+  main { max-width:720px; margin:auto; padding:24px 16px 40px; }
+  .card { background:#181b22; border:1px solid #2a2f39; border-radius:18px; padding:20px; margin:12px 0; }
+  h1 { margin:0 0 6px; font-size:28px; }
+  .muted { color:#a7afbd; }
+  .digit { font:700 clamp(72px,22vw,150px)/1 ui-monospace,SFMono-Regular,monospace; text-align:center; margin:18px 0; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .label { color:#929baa; font-size:13px; }
+  .value { font-family:ui-monospace,SFMono-Regular,monospace; word-break:break-word; margin-top:3px; }
+  button { min-height:48px; width:100%; border:0; border-radius:12px; font-size:16px; font-weight:700; background:#e5e7eb; color:#111827; }
+  button:active { transform:translateY(1px); }
+  .ok { color:#8ee6a4; }
+  .err { color:#ff9292; white-space:pre-wrap; }
+  @media (max-width:480px){ .grid{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+<main id="app">
+  <h1>π / Dakika Sayacı</h1>
+  <div class="muted">Her dakika bir sonraki kayıtlı π basamağı.</div>
+
+  <section class="card">
+    <div class="label">Şu anki basamak</div>
+    <div id="digit" class="digit">…</div>
+    <div id="position" class="muted" style="text-align:center">Yükleniyor…</div>
+  </section>
+
+  <section class="card">
+    <div class="grid">
+      <div><div class="label">Başlangıç</div><div id="start" class="value">…</div></div>
+      <div><div class="label">Geçen dakika</div><div id="minutes" class="value">…</div></div>
+      <div><div class="label">π indeksi</div><div id="index" class="value">…</div></div>
+      <div><div class="label">Durum</div><div id="status" class="value ok">Çalışıyor</div></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <button id="txt">Geçmiş tüm dakikaları TXT yap</button>
+    <p class="muted" style="margin-bottom:0">TXT, başlangıçtan şu ana kadar olan her dakikanın zamanını, indeksini ve basamağını içerir.</p>
+  </section>
+
+  <div id="error" class="err"></div>
+</main>
+
+<script>
+const digitEl = document.querySelector("#digit");
+const positionEl = document.querySelector("#position");
+const startEl = document.querySelector("#start");
+const minutesEl = document.querySelector("#minutes");
+const indexEl = document.querySelector("#index");
+const statusEl = document.querySelector("#status");
+const errorEl = document.querySelector("#error");
+
+let state = null;
+let pi = null;
+
+function formatDate(ms) {
+  return new Date(ms).toLocaleString("tr-TR", {
+    dateStyle: "medium", timeStyle: "medium"
+  });
+}
+
+async function loadPi() {
+  if (pi !== null) return pi;
+  const r = await fetch("/pi.txt", { cache: "force-cache" });
+  if (!r.ok) throw new Error("pi.txt yüklenemedi.");
+  pi = (await r.text()).trim();
+  return pi;
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/status?t=" + Date.now(), { cache: "no-store" });
+    const data = await r.json();
+    if (!r.ok || data.error) throw new Error(data.error || "Sunucu hatası.");
+
+    state = data;
+    digitEl.textContent = data.digit;
+    startEl.textContent = formatDate(data.startTimeMs);
+    minutesEl.textContent = data.elapsedMinutes.toLocaleString("tr-TR");
+    indexEl.textContent = data.digitIndex.toLocaleString("tr-TR");
+    positionEl.textContent =
+      data.digitIndex === 0 ? "π'nin tam sayı basamağı" :
+      "π'nin virgülden sonraki " + data.digitIndex.toLocaleString("tr-TR") + ". basamağı";
+    statusEl.textContent = "Çalışıyor";
+    statusEl.className = "value ok";
+    errorEl.textContent = "";
+  } catch (e) {
+    statusEl.textContent = "Hata";
+    statusEl.className = "value";
+    errorEl.textContent = String(e.message || e);
+  }
+}
+
+document.querySelector("#txt").addEventListener("click", async () => {
+  try {
+    if (!state) await refresh();
+    const all = await loadPi();
+    const count = state.elapsedMinutes + 1;
+    const startIndex = state.startIndex;
+    const endIndex = startIndex + count;
+
+    if (endIndex > all.length) throw new Error("Hazır π verisi bu kadar dakikaya yetmiyor.");
+
+    const lines = [
+      "Pi Dakika Geçmişi",
+      "Başlangıç: " + formatDate(state.startTimeMs),
+      "Başlangıç π indeksi: " + startIndex,
+      "",
+      "Dakika | Zaman | π indeksi | Basamak"
+    ];
+
+    for (let m = 0; m < count; m++) {
+      const idx = startIndex + m;
+      lines.push(
+        String(m).padStart(7, "0") + " | " +
+        formatDate(state.startTimeMs + m * 60000) + " | " +
+        idx + " | " + all[idx]
+      );
+    }
+
+    const blob = new Blob([lines.join("\n")], {type:"text/plain;charset=utf-8"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "pi-gecmis-" + new Date().toISOString().slice(0,10) + ".txt";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  } catch (e) {
+    errorEl.textContent = String(e.message || e);
+  }
+});
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>
