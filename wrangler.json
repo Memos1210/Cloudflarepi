@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "cloudflarepi",
+  "name": "pi-minute-counter",
   "main": "src/index.js",
   "compatibility_date": "2026-09-25",
   "assets": {
@@ -10,6 +10,10 @@
   },
   "vars": {
     "START_TIME_MS": "1790542800000",
-    "START_INDEX": "0"
-  }
+    "START_INDEX": "0",
+    "SCRATCH_TZ": "Europe/Istanbul"
+  },
+  "kv_namespaces": [
+    { "binding": "SCRATCH_KV", "id": "c7fe936eb3b24d3c9af29af70b0cd091" }
+  ]
 }
