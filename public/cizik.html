@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Çizik Tahtası</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; font-family:system-ui,sans-serif; background:#0f1115; color:#f3f4f6; }
+  main { max-width:720px; margin:auto; padding:24px 16px 40px; }
+  .card { background:#181b22; border:1px solid #2a2f39; border-radius:18px; padding:20px; margin:12px 0; }
+  h1 { margin:0 0 6px; font-size:28px; }
+  .muted { color:#a7afbd; }
+  .label { color:#929baa; font-size:13px; }
+  .value { font-family:ui-monospace,SFMono-Regular,monospace; margin-top:3px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  button { min-height:48px; width:100%; border:0; border-radius:12px; font-size:16px; font-weight:700; background:#e5e7eb; color:#111827; }
+  button:active { transform:translateY(1px); }
+  button:disabled { opacity:.5; }
+  button:focus-visible { outline:2px solid #8ee6a4; outline-offset:2px; }
+  .ghost { background:#181b22; color:#f3f4f6; border:1px solid #2a2f39; font-weight:600; }
+  .back { width:auto; min-height:40px; padding:0 16px; margin-bottom:14px; }
+  .ok { color:#8ee6a4; }
+  .err { color:#ff9292; white-space:pre-wrap; }
+
+  .board { display:grid; grid-template-columns:repeat(auto-fill,minmax(64px,1fr)); gap:8px; }
+  .box { position:relative; aspect-ratio:1; min-height:0; padding:0; background:#12151b; color:#e5e7eb; border:1px solid #2a2f39; }
+  .box svg, .big svg { display:block; width:100%; height:100%; }
+  .box .n { position:absolute; right:5px; bottom:2px; font-size:9px; font-weight:400; color:#6b7380; }
+  .box.full { border-color:#3d4453; }
+  .box.cur { border-color:#8ee6a4; }
+
+  .ov { position:fixed; inset:0; z-index:10; display:flex; align-items:center; justify-content:center; padding:16px; background:rgba(5,7,10,0); transition:background .25s; }
+  .ov[hidden] { display:none; }
+  .ov.show { background:rgba(5,7,10,.75); }
+  .panel { width:min(92vw,380px); max-height:94vh; overflow:auto; box-sizing:border-box; background:#181b22; border:1px solid #2a2f39; border-radius:20px; padding:16px; transition:transform .28s cubic-bezier(.2,.8,.2,1), opacity .2s; }
+  .panel:focus { outline:none; }
+  .phead { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px; }
+  .big { aspect-ratio:1; background:#12151b; border:1px solid #2a2f39; border-radius:14px; color:#f3f4f6; }
+  .dates { list-style:none; margin:12px 0; padding:0; font-size:14px; }
+  .dates li { padding:3px 0; }
+  #note { min-height:20px; margin:0 0 12px; font-size:14px; }
+  #act { margin-bottom:8px; }
+
+  .draw { stroke-dasharray:var(--l); stroke-dashoffset:var(--l); animation:draw .55s .1s ease-out forwards; }
+  @keyframes draw { to { stroke-dashoffset:0; } }
+  @media (prefers-reduced-motion:reduce) {
+    .ov, .panel { transition:none; }
+    .draw { animation:none; stroke-dashoffset:0; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <button class="back ghost" onclick="location.href='/'">Geri</button>
+  <h1>Çizik Tahtası</h1>
+  <div class="muted">Günde bir çizik. Geri alınamaz. Her kutuya 5 çizik sığar.</div>
+
+  <section class="card">
+    <div class="grid">
+      <div><div class="label">Toplam çizik</div><div id="total" class="value">…</div></div>
+      <div><div class="label">Bugün</div><div id="today" class="value">…</div></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <p class="muted" style="margin-top:0">Kutuya dokun, büyüsün. Yeşil çerçeveli kutu sıradaki kutudur.</p>
+    <div id="board" class="board"></div>
+  </section>
+
+  <div id="error" class="err"></div>
+</main>
+
+<div id="ov" class="ov" hidden>
+  <div id="panel" class="panel" role="dialog" aria-modal="true" aria-labelledby="ptitle" tabindex="-1">
+    <div class="phead"><strong id="ptitle"></strong><span id="pcount" class="muted"></span></div>
+    <div id="big" class="big"></div>
+    <ul id="pdates" class="dates"></ul>
+    <p id="note" class="muted"></p>
+    <button id="act">Bugünün çiziğini at</button>
+    <button id="close" class="ghost">Kapat</button>
+  </div>
+</div>
+
+<script>
+const PER = 5, BOXES = 73;          // kutu başına 5 çizik, bir yıl = 73 kutu (365 çizik)
+const boardEl = document.querySelector("#board");
+const totalEl = document.querySelector("#total");
+const todayEl = document.querySelector("#today");
+const errorEl = document.querySelector("#error");
+const ov = document.querySelector("#ov");
+const panel = document.querySelector("#panel");
+const big = document.querySelector("#big");
+const act = document.querySelector("#act");
+const note = document.querySelector("#note");
+const closeBtn = document.querySelector("#close");
+
+let st = null;      // sunucudan gelen durum: { days, today, canScratch }
+let openBox = -1;
+let busy = false;
+let hideTimer = 0;
+
+function fmt(d) {
+  const [y, m, dd] = d.split("-").map(Number);
+  return new Date(y, m - 1, dd).toLocaleDateString("tr-TR", { day: "numeric", month: "long", year: "numeric" });
+}
+
+// n çizik: ilk 4'ü dikey, 5.si hepsini keser
+function tally(n, animateLast) {
+  let s = '<svg viewBox="0 0 100 100" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round">';
+  for (let i = 0; i < n; i++) {
+    const d = i < 4 ? "M" + (20 + i * 20) + " 22V78" : "M8 68L92 32";
+    const l = i < 4 ? 56 : 92;
+    s += '<path d="' + d + '" style="--l:' + l + '"' + (animateLast && i === n - 1 ? ' class="draw"' : "") + "/>";
+  }
+  return s + "</svg>";
+}
+
+const inBox = (i) => Math.max(0, Math.min(PER, st.days.length - i * PER));
+
+async function api(method) {
+  let r;
+  try { r = await fetch("/api/scratch?t=" + Date.now(), { method, cache: "no-store" }); }
+  catch { throw new Error("Sunucuya ulaşılamadı. Bağlantını kontrol edip tekrar dene."); }
+  let data = null;
+  try { data = await r.json(); } catch {}
+  if (!data || !data.days) throw new Error((data && data.error) || "Sunucu hatası (" + r.status + "). Worker'ın deploy edildiğinden emin ol.");
+  return { ok: r.ok, data };
+}
+
+function render() {
+  const n = st.days.length;
+  const total = Math.ceil((n + 1) / (PER * BOXES)) * BOXES;
+  const cur = Math.floor(n / PER);
+  boardEl.innerHTML = "";
+  for (let i = 0; i < total; i++) {
+    const c = inBox(i);
+    const b = document.createElement("button");
+    b.className = "box" + (c === PER ? " full" : "") + (i === cur ? " cur" : "");
+    b.setAttribute("aria-label", "Kutu " + (i + 1) + ", " + c + " çizik");
+    b.innerHTML = '<span class="n">' + (i + 1) + "</span>" + tally(c);
+    b.addEventListener("click", () => openPanel(i, b));
+    boardEl.appendChild(b);
+  }
+  totalEl.textContent = n.toLocaleString("tr-TR");
+  todayEl.textContent = st.canScratch ? "Hakkın var" : "Atıldı";
+  todayEl.className = "value" + (st.canScratch ? " ok" : "");
+}
+
+function fillPanel(animate) {
+  const i = openBox, n = st.days.length, cur = Math.floor(n / PER);
+  document.querySelector("#ptitle").textContent = "Kutu " + (i + 1);
+  document.querySelector("#pcount").textContent = inBox(i) + " / " + PER + " çizik";
+  big.innerHTML = tally(inBox(i), animate);
+
+  const list = document.querySelector("#pdates");
+  list.innerHTML = "";
+  st.days.slice(i * PER, i * PER + PER).forEach((d, k) => {
+    const li = document.createElement("li");
+    li.textContent = (k + 1) + ". çizik: " + fmt(d);
+    list.appendChild(li);
+  });
+
+  note.className = "muted";
+  act.hidden = !(i === cur && st.canScratch);
+  if (i === cur) note.textContent = st.canScratch ? "Geri alınamaz. Günde yalnızca bir çizik atılır." : "Bugünün çiziği atıldı. Yarın yine gel.";
+  else note.textContent = i < cur ? "Bu kutu dolu." : "Sıra bu kutuya henüz gelmedi.";
+}
+
+// Paneli, dokunulan kutunun yerinden büyüyecek/küçülecek şekilde konumlar
+function fromBox(el) {
+  const r = el.getBoundingClientRect();
+  const dx = r.left + r.width / 2 - (panel.offsetLeft + panel.offsetWidth / 2);
+  const dy = r.top + r.height / 2 - (panel.offsetTop + panel.offsetHeight / 2);
+  return "translate(" + dx + "px," + dy + "px) scale(" + r.width / panel.offsetWidth + ")";
+}
+
+function openPanel(i, el) {
+  clearTimeout(hideTimer);
+  openBox = i;
+  fillPanel(false);
+  ov.hidden = false;
+  document.documentElement.style.overflow = "hidden";
+  panel.style.transition = "none";
+  panel.style.transform = fromBox(el);
+  panel.style.opacity = ".3";
+  void panel.offsetWidth;
+  panel.style.transition = panel.style.transform = panel.style.opacity = "";
+  ov.classList.add("show");
+  (act.hidden ? closeBtn : act).focus({ preventScroll: true });
+}
+
+function closePanel() {
+  if (ov.hidden) return;
+  const el = boardEl.children[openBox];
+  if (el) panel.style.transform = fromBox(el);
+  panel.style.opacity = "0";
+  ov.classList.remove("show");
+  hideTimer = setTimeout(() => {
+    ov.hidden = true;
+    panel.style.transform = panel.style.opacity = "";
+    document.documentElement.style.overflow = "";
+    if (el) el.focus({ preventScroll: true });
+  }, 280);
+  openBox = -1;
+}
+
+async function scratch() {
+  if (busy) return;
+  busy = true;
+  act.disabled = true;
+  try {
+    const { ok, data } = await api("POST");
+    st = data;
+    render();
+    fillPanel(ok);   // yeni çizik yalnızca gerçekten eklendiyse çizilerek belirir
+    if (!ok) note.textContent = data.error;
+  } catch (e) {
+    note.textContent = String(e.message || e);
+    note.className = "err";
+  } finally {
+    busy = false;
+    act.disabled = false;
+  }
+}
+
+async function load() {
+  try {
+    st = (await api("GET")).data;
+    errorEl.textContent = "";
+    render();
+    if (openBox >= 0) fillPanel(false);
+  } catch (e) {
+    errorEl.textContent = String(e.message || e);
+  }
+}
+
+act.addEventListener("click", scratch);
+closeBtn.addEventListener("click", closePanel);
+ov.addEventListener("click", (e) => { if (e.target === ov) closePanel(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePanel(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+
+load();
+</script>
+</body>
+</html>
